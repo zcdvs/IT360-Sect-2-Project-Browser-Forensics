@@ -1,34 +1,37 @@
-# IT360-Project
+# IT360 Project
 
-Project overview: A tool for analyzing information relating to browsers: cookies,
-extension/plugin permissions, download history, browser history, login sessions, and
-cache/autofill analysis.
+## Overview
+A tool for analyzing browser-related information such as cookies, extensions, download history, browsing history, login sessions, and cache/autofill data.
 
-Extract and analyze:
+## Features
+The tool can extract and analyze:
 
-● Cookies (name, value, domain, expiration)
+- **Cookies**
+  - Name, value, domain, expiration
+  - Secure & non-secure cookies
+- **Browsing history**
+  - URLs and timestamps
+  - Chronological timeline creation
+- **Download history**
+  - File names and URLs
+- **Extensions metadata**
+  - Detect and flag suspicious extensions (based on permissions)
 
-    ○ Secure & Non-secure
-    
-● Browsing history (URLs and timestamps)
+## Target Platform
+- Primary: Chrome and Edge on **Windows**  
+- Future: Potential support for **Linux** and other browsers
 
-    ○ Create chronological timeline
-    
-● Download history (file names and URLs)
+## Implementation
+- **Language:** Python  
+- **Artifact selection:** User-focused data (session history, browser data, etc.)  
+- **Output format:**  
+  - Human-readable text logs  
+  - CSV files for further analysis  
 
-● Extensions metadata
+## Potential Features (Stretch Goals)
+- Cross-platform support (Windows + Linux)
+- Support for more browsers
+- GUI interface
+- Scheduling tool execution
+- Data integrity through hashing
 
-● Flag suspicious extensions (based on permissions)
-
-Target platform: Chrome/Edge browsers on Windows. Potentially adding support for Linux or
-other browsers if we have time.
-
-Implementation language: We plan to write the script in Python.
-Artifact selection: User-focused data - session history, browser data, etc.
-
-Output format: Human-readable text logs, with additional CSV files for further analysis if
-necessary.
-
-Potential features (if time): Supporting Linux and Windows and more browsers than just Edge
-and Chrome. Adding a GUI to the tool. Scheduling the tool’s execution. Maintaining data
-integrity through hashing.
