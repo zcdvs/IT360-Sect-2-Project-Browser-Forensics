@@ -5,12 +5,19 @@ extension/plugin permissions, download history, browser history, login sessions,
 cache/autofill analysis.
 
 Extract and analyze:
+
 ● Cookies (name, value, domain, expiration)
+
     ○ Secure & Non-secure
+    
 ● Browsing history (URLs and timestamps)
+
     ○ Create chronological timeline
+    
 ● Download history (file names and URLs)
+
 ● Extensions metadata
+
 ● Flag suspicious extensions (based on permissions)
 
 Target platform: Chrome/Edge browsers on Windows. Potentially adding support for Linux or
