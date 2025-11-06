@@ -80,10 +80,10 @@ def tz_chicago():
     elif pytz:
         return pytz.timezone(CHICAGO_TZ_NAME)
     else:
-        # As a fallback, use fixed-offset US Central (not DST-aware) — but we warn the user.
-        print("WARNING: zoneinfo and pytz not available; timezone conversion will not handle DST correctly.")
-        # Central Time offset during DST is -5, otherwise -6. We'll use -5 as a coarse fallback.
-        return datetime.timezone(datetime.timedelta(hours=-5))
+        # As a fallback, use fixed-offset US Central (not DST-aware) — warn the user.
+        print("WARNING: zoneinfo and pytz not available; timezone conversion will NOT handle DST correctly. Using a fixed CST offset (-6 hrs).")
+        # Use standard Central Standard Time offset (-6). This will not reflect DST transitions.
+        return datetime.timezone(datetime.timedelta(hours=-6))
 
 
 def export_history(copies, output_csv=CSV_OUTPUT, days_back=DAYS_BACK):
@@ -112,6 +112,7 @@ def export_history(copies, output_csv=CSV_OUTPUT, days_back=DAYS_BACK):
     """
 
     for profile_name, db_copy in copies:
+        conn = None
         try:
             conn = sqlite3.connect(str(db_copy))
             cur = conn.cursor()
@@ -144,7 +145,8 @@ def export_history(copies, output_csv=CSV_OUTPUT, days_back=DAYS_BACK):
             print(f"Warning: couldn't read DB for profile {profile_name}: {e}")
         finally:
             try:
-                conn.close()
+                if conn:
+                    conn.close()
             except Exception:
                 pass
 
