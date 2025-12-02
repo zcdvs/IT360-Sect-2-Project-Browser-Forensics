@@ -5,6 +5,11 @@ import shutil
 import datetime
 import tempfile
 import argparse
+try:
+    from chrome_decrypt import decrypt_chrome_password_bytes, get_secret_key
+except Exception:
+    decrypt_chrome_password_bytes = None
+    get_secret_key = None
 from urllib.parse import urlparse
 
 
@@ -67,7 +72,7 @@ def domain_from_url(url):
 
 
 def export_logins(chrome_user_data, profile="Default", output_csv="chrome_encrypted_logins_clean.csv", debug=False,
-                  days_back=14, use_login_last_used=False, include_no_history=False, match_by_host=True, normalize_hosts=True, full_report=False):
+                  days_back=14, use_login_last_used=False, include_no_history=False, match_by_host=True, normalize_hosts=True, full_report=False, mask_passwords=False, decrypt_logins=False):
     login_db = os.path.join(chrome_user_data, profile, "Login Data")
     history_db = os.path.join(chrome_user_data, profile, "History")
 
@@ -151,6 +156,13 @@ def export_logins(chrome_user_data, profile="Default", output_csv="chrome_encryp
                 writer.writerow(["origin_url", "username", "encrypted_password", "last_visit", "visit_count"])
 
             login_rows = login_cursor.fetchall()
+            # if we will decrypt logins, fetch the secret key once
+            secret_key = None
+            if decrypt_logins and get_secret_key:
+                try:
+                    secret_key = get_secret_key()
+                except Exception:
+                    secret_key = None
             if debug:
                 print(f"[DEBUG] total logins fetched: {len(login_rows)}")
                 if len(login_rows) > 0:
@@ -275,7 +287,9 @@ def export_logins(chrome_user_data, profile="Default", output_csv="chrome_encryp
                     writer.writerow([
                         origin_url,
                         username,
-                        encrypted_password.hex() if encrypted_password else "",
+                        ("[REDACTED]" if mask_passwords else (
+                            (decrypt_chrome_password_bytes(encrypted_password, secret_key) if decrypt_logins and decrypt_chrome_password_bytes and encrypted_password else (encrypted_password.hex() if encrypted_password else ""))
+                        )),
                         (chrome_time_to_datetime(last_used).isoformat() if chrome_time_to_datetime(last_used) else ""),
                         (last_visit.isoformat() if last_visit else ""),
                         visit_count,
@@ -290,7 +304,9 @@ def export_logins(chrome_user_data, profile="Default", output_csv="chrome_encryp
                     writer.writerow([
                         origin_url,
                         username,
-                        encrypted_password.hex() if encrypted_password else "",
+                        ("[REDACTED]" if mask_passwords else (
+                            (decrypt_chrome_password_bytes(encrypted_password, secret_key) if decrypt_logins and decrypt_chrome_password_bytes and encrypted_password else (encrypted_password.hex() if encrypted_password else ""))
+                        )),
                         last_visit.isoformat() if last_visit else "",
                         visit_count
                     ])
@@ -372,7 +388,7 @@ def count_logins_for_profile(chrome_user_data, profile):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Export Chrome login metadata with history matching (no decryption).")
+    parser = argparse.ArgumentParser(description="Export Chrome login metadata with history matching (optionally decrypt passwords).")
     parser.add_argument("--profile", default="Default", help="Chrome profile folder name (Default)")
     parser.add_argument("--output", default="chrome_encrypted_logins_clean.csv", help="Output CSV file")
     parser.add_argument("--debug", action="store_true", help="Print debug diagnostics")
@@ -382,6 +398,10 @@ if __name__ == "__main__":
     parser.add_argument("--no-host-match", dest="match_by_host", action="store_false", help="Disable host-based matching and use LIKE instead")
     parser.add_argument("--no-normalize-hosts", dest="no_normalize_hosts", action="store_true", help="Disable host normalization when matching hosts")
     parser.add_argument("--full-report", dest="full_report", action="store_true", help="Write a full CSV report with inclusion reason for every login")
+    # Full-report output path (optional) - declared above
+    parser.add_argument("--mask-passwords", action="store_true", help="Mask password fields in output CSVs")
+    parser.add_argument("--decrypt-logins", action="store_true", help="Attempt to decrypt Chrome saved passwords (Windows only)")
+    parser.add_argument("--full-report-output", dest="full_report_output", help="Path for full-report CSV (if not set, full-report written to same file as --output)")
     args = parser.parse_args()
 
     chrome_user_data = os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Google\Chrome\User Data")
@@ -417,7 +437,26 @@ if __name__ == "__main__":
         normalize_hosts=not args.no_normalize_hosts,
         # full_report is consumed below when writing rows
         full_report=args.full_report if 'full_report' in args else False,
+        mask_passwords=args.mask_passwords,
+        decrypt_logins=args.decrypt_logins,
     )
+    # If a full report path was provided, generate/write it here using the same parameters
+    if args.full_report and args.full_report_output:
+        # Generate the full report by calling export_logins again with full_report=True and output filename
+        export_logins(
+            chrome_user_data,
+            profile=chosen_profile,
+            output_csv=args.full_report_output,
+            debug=args.debug,
+            days_back=args.days,
+            use_login_last_used=args.use_login_last_used,
+            include_no_history=args.include_no_history,
+            match_by_host=args.match_by_host,
+            normalize_hosts=not args.no_normalize_hosts,
+            full_report=True,
+            mask_passwords=args.mask_passwords,
+            decrypt_logins=args.decrypt_logins,
+        )
     if rc == 0:
         print(f"Cleaned encrypted logins exported to {args.output}")
     raise SystemExit(rc)
