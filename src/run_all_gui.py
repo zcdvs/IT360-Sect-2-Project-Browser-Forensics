@@ -419,7 +419,7 @@ class RunAllGUI(tk.Tk):
         viewer_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=6, pady=6)
 
         # LEFT PANEL: Hierarchical file tree + action buttons
-        left_v = ttk.Frame(viewer_frame, width=280)
+        left_v = ttk.Frame(viewer_frame, width=300)
         left_v.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
         left_v.pack_propagate(False)
 
@@ -438,13 +438,16 @@ class RunAllGUI(tk.Tk):
         self.file_tree.bind('<<TreeviewSelect>>', self._on_file_tree_select)
         self.file_tree.bind('<Double-1>', self._on_file_tree_double_click)
 
-        # Action buttons
-        btn_frame = ttk.Frame(left_v)
-        btn_frame.pack(fill=tk.X, pady=4)
-        ttk.Button(btn_frame, text='Refresh', command=self._populate_file_tree).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text='Preview', command=self._preview_selected_file).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text='Open', command=self._open_selected_file).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text='Folder', command=self._show_output_folder).pack(side=tk.LEFT, padx=2)
+        # Action buttons (two rows to avoid cutoff)
+        btn_frame1 = ttk.Frame(left_v)
+        btn_frame1.pack(fill=tk.X, pady=(4, 2))
+        ttk.Button(btn_frame1, text='Refresh', command=self._populate_file_tree).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+        ttk.Button(btn_frame1, text='Preview', command=self._preview_selected_file).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+        
+        btn_frame2 = ttk.Frame(left_v)
+        btn_frame2.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(btn_frame2, text='Open File', command=self._open_selected_file).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+        ttk.Button(btn_frame2, text='Open Folder', command=self._show_output_folder).pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
 
         # Selected file path display
         self.file_path_var = tk.StringVar()

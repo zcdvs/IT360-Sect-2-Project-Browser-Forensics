@@ -122,18 +122,16 @@ def fetch_table_data(db_path, table_name):
         return [], []
 
 def write_csv(filename, data_dict):
-    """Write each table’s data to one readable CSV with headers."""
+    """Write table data to a clean CSV with headers."""
     with open(filename, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         for table_name, (columns, rows) in data_dict.items():
-            writer.writerow([f"--- Table: {table_name} ---"])
             if columns and rows:
                 writer.writerow(columns)
                 for row in rows:
                     writer.writerow(row)
             else:
-                writer.writerow(["No data found or table missing."])
-            writer.writerow([])
+                print(f"[!] No data found for table: {table_name}")
     print(f"[+] Data exported to {filename}")
 
 def export_chrome_autofill_data(output_file=None):
