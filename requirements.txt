@@ -1,0 +1,10 @@
+# Browser Forensics Tool - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Cryptography libraries for Chrome password decryption
+pycryptodome>=3.19.0
+cryptography>=41.0.0
+
+# Windows-only: DPAPI access for Chrome/Firefox password decryption
+# Only needed on Windows systems
+pywin32>=306; sys_platform == "win32"
