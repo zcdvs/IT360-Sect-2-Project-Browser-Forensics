@@ -92,15 +92,16 @@ class RunnerThread(threading.Thread):
 # ==================== SCRIPT INFO ====================
 # Map of script labels to their Python file paths (all in src/ folder)
 SCRIPT_PATHS = {
-    'chrome_downloads': 'Chrome_Downloads.py',
-    'chrome_history': 'Chrome_History.py',
-    'chrome_extensions': 'Chrome_Extensions.py',
-    'chrome_sessions': 'Chrome_Sessions.py',
     'chrome_autofill': 'Chrome_Autofill.py',
     'chrome_decrypt': 'chrome_decrypt.py',
+    'chrome_downloads': 'Chrome_Downloads.py',
+    'chrome_extensions': 'Chrome_Extensions.py',
+    'chrome_history': 'Chrome_History.py',
+    'chrome_sessions': 'Chrome_Sessions.py',
+    'firefox_decryptor': 'firefox_decryptor.py',
     'firefox_downloads': 'Firefox_Downloads.py',
-    'firefox_history': 'Firefox_History.py',
     'firefox_extensions': 'Firefox_Extensions.py',
+    'firefox_history': 'Firefox_History.py',
     'firefox_sessions': 'Firefox_Sessions.py',
 }
 
@@ -203,7 +204,7 @@ class ScriptRunnerDialog(tk.Toplevel):
             self._show_help('(Script path not found)')
             return
 
-        full_path = ROOT_DIR / script_path
+        full_path = SRC_DIR / script_path
         if not full_path.exists():
             self._show_help(f'(Script not found: {full_path})')
             return
@@ -301,7 +302,7 @@ class ScriptRunnerDialog(tk.Toplevel):
             messagebox.showerror('Error', f'Script path not found for: {label}')
             return
 
-        full_path = ROOT_DIR / script_path
+        full_path = SRC_DIR / script_path
         if not full_path.exists():
             messagebox.showerror('Error', f'Script not found: {full_path}')
             return
