@@ -3,6 +3,14 @@
 Refactored to behave similarly to the Firefox decryptor: can operate over
 profiles or a single profile, emits JSON or CSV output, supports non-interactive
 mode and continues on non-fatal decryption errors.
+
+IMPORTANT LIMITATION (Chrome v127+, July 2024):
+Chrome introduced "App-Bound Encryption" which binds the encryption key to Chrome
+itself using the Chrome Elevation Service. Passwords encrypted with v20+ prefix
+cannot be decrypted outside of Chrome without access to Chrome's internal services.
+This affects passwords saved after Chrome v127 was installed.
+
+Older passwords (v10 prefix) can still be decrypted with this tool.
 """
 from __future__ import annotations
 
@@ -20,16 +28,14 @@ import traceback
 
 try:
     import win32crypt
-except Exception:
+except ImportError:
     win32crypt = None
 
 try:
-    from Cryptodome.Cipher import AES
-except Exception:
-    try:
-        from Crypto.Cipher import AES
-    except Exception:
-        AES = None
+    from Cryptodome.Cipher import AES 
+except ImportError:
+    AES = None
+
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
 except Exception:
@@ -44,28 +50,56 @@ LOCAL_STATE = CHROME_USER_DATA / 'Local State'
 DEBUG = False
 
 
-def get_secret_key_from_local_state(local_state_path: Path) -> bytes | None:
+def get_secret_key_from_local_state(local_state_path: Path) -> tuple[bytes | None, bytes | None]:
     """Read Chrome Local State and decrypt the encrypted_key with DPAPI.
 
-    Returns raw AES key bytes or None on failure.
+    Returns tuple of (regular_key, app_bound_key) - either may be None.
+    
+    Note: app_bound_key extraction requires Chrome Elevation Service access
+    and will typically fail for external tools (Chrome v127+ protection).
     """
+    regular_key = None
+    app_bound_key = None
+    
     try:
         if not local_state_path.exists():
-            return None
+            return None, None
         data = json.loads(local_state_path.read_text(encoding='utf-8'))
-        enc_key_b64 = data.get('os_crypt', {}).get('encrypted_key')
-        if not enc_key_b64:
-            return None
-        enc_key = base64.b64decode(enc_key_b64)
-        # strip DPAPI prefix
-        if enc_key.startswith(b'DPAPI'):
-            enc_key = enc_key[5:]
-        if win32crypt is None:
-            return None
-        # DPAPI decrypt
-        return win32crypt.CryptUnprotectData(enc_key, None, None, None, 0)[1]
-    except Exception:
-        return None
+        os_crypt = data.get('os_crypt', {})
+        
+        # Try regular encrypted_key (DPAPI protected)
+        enc_key_b64 = os_crypt.get('encrypted_key')
+        if enc_key_b64 and win32crypt:
+            try:
+                enc_key = base64.b64decode(enc_key_b64)
+                if enc_key.startswith(b'DPAPI'):
+                    enc_key = enc_key[5:]
+                regular_key = win32crypt.CryptUnprotectData(enc_key, None, None, None, 0)[1]
+            except Exception as e:
+                if DEBUG:
+                    print(f'[DEBUG] Failed to decrypt regular encrypted_key: {e}', file=sys.stderr)
+        
+        # Try app_bound_encrypted_key (Chrome v127+ App-Bound Encryption)
+        # This typically cannot be decrypted outside of Chrome
+        app_bound_b64 = os_crypt.get('app_bound_encrypted_key')
+        if app_bound_b64 and win32crypt:
+            try:
+                app_bound_raw = base64.b64decode(app_bound_b64)
+                if app_bound_raw.startswith(b'APPB'):
+                    # APPB prefix indicates app-bound encryption
+                    # The actual key is DPAPI-encrypted but with Chrome's elevation service
+                    # as the required context, so this will fail for external tools
+                    enc_part = app_bound_raw[4:]
+                    app_bound_key = win32crypt.CryptUnprotectData(enc_part, None, None, None, 0)[1]
+            except Exception as e:
+                if DEBUG:
+                    print(f'[DEBUG] Failed to decrypt app_bound_encrypted_key (expected for v127+): {e}', file=sys.stderr)
+                    
+    except Exception as e:
+        if DEBUG:
+            print(f'[DEBUG] Error reading Local State: {e}', file=sys.stderr)
+    
+    return regular_key, app_bound_key
 
 
 def generate_derived_keys() -> list[bytes]:
@@ -104,87 +138,100 @@ def generate_derived_keys() -> list[bytes]:
     return out
 
 
-def decrypt_chrome_value(encrypted_value: bytes, secret_key: bytes) -> str | None:
-    """Decrypt a Chrome encrypted_value (v10...) using AES-GCM and return plaintext.
+def decrypt_chrome_value(encrypted_value: bytes, secret_key: bytes, app_bound_key: bytes = None) -> tuple[str | None, str]:
+    """Decrypt a Chrome encrypted_value (v10/v20...) using AES-GCM and return plaintext.
 
-    Returns None on failure.
+    Returns tuple of (plaintext, status) where:
+    - plaintext is the decrypted string or None on failure
+    - status is 'ok', 'v20_app_bound', 'failed', or 'empty'
+    
+    Chrome AES-GCM format:
+    - Prefix: 3 bytes ('v10', 'v20', etc.)
+    - Nonce/IV: 12 bytes
+    - Ciphertext + Tag: remaining bytes (tag is appended to ciphertext)
+    
+    Note: v20 prefix typically indicates App-Bound Encryption (Chrome v127+)
+    which cannot be decrypted outside of Chrome.
     """
     try:
         if not encrypted_value:
-            return None
-        # Chrome uses a `vXX` prefix (e.g. 'v10', 'v11', 'v20') then a 12-byte IV,
-        # ciphertext, and 16-byte tag. Accept any version that starts with 'v'.
-        if isinstance(encrypted_value, (bytes, bytearray, memoryview)) and len(encrypted_value) >= 31 and encrypted_value[0:1] == b'v':
-            iv = encrypted_value[3:15]
-            tag = encrypted_value[-16:]
-            ciphertext = encrypted_value[15:-16]
-            # Try decrypt with no AAD first, then try some common AAD variants (version prefix)
-            aad_candidates = [None, encrypted_value[:3]]
-            for aad in aad_candidates:
-                try:
-                    cipher = AES.new(secret_key, AES.MODE_GCM, iv)
-                    if aad is not None:
-                        cipher.update(aad)
-                    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-                    if DEBUG:
-                        print(f'[DEBUG] AES-GCM success with aad={aad}', file=sys.stderr)
-                    return plaintext.decode('utf-8', errors='replace')
-                except Exception as e:
-                    if DEBUG:
-                        try:
-                            key_sample = secret_key.hex()[:32]
-                        except Exception:
-                            key_sample = '<unk>'
-                        try:
-                            ct_sample = ciphertext[:32].hex()
-                        except Exception:
-                            ct_sample = '<unk>'
-                        aad_desc = '<none>' if aad is None else (aad.hex() if isinstance(aad, (bytes,bytearray)) else str(aad))
-                        print(f'[DEBUG] AES-GCM failed (aad={aad_desc}): key={key_sample} iv={iv.hex()} ct_sample={ct_sample} tag={tag.hex()} err={e}', file=sys.stderr)
-                        traceback.print_exc(file=sys.stderr)
-            # Try cryptography AESGCM decrypt on combined ciphertext+tag (some implementations expect combined input)
-            if _AESGCM is not None:
-                try:
-                    combined = encrypted_value[15:]
-                    aesgcm = _AESGCM(secret_key)
-                    aad = encrypted_value[:3]
+            return None, 'empty'
+            
+        # Chrome uses a `vXX` prefix (e.g. 'v10', 'v11', 'v20') then a 12-byte nonce
+        if isinstance(encrypted_value, (bytes, bytearray, memoryview)) and len(encrypted_value) >= 15 and encrypted_value[0:1] == b'v':
+            version_prefix = encrypted_value[:3]
+            nonce = encrypted_value[3:15]  # 12-byte nonce
+            ciphertext_with_tag = encrypted_value[15:]  # ciphertext + GCM tag (16 bytes)
+            
+            # Determine which keys to try based on version
+            keys_to_try = []
+            if version_prefix == b'v20' and app_bound_key:
+                # v20 should use app-bound key first
+                keys_to_try.append(('app_bound', app_bound_key))
+            if secret_key:
+                keys_to_try.append(('regular', secret_key))
+            if version_prefix == b'v20' and not app_bound_key:
+                # v20 without app_bound_key will likely fail
+                if DEBUG:
+                    print(f'[DEBUG] v20 encrypted value but no app_bound_key available (Chrome v127+ protection)', file=sys.stderr)
+            
+            for key_name, key in keys_to_try:
+                # Try cryptography's AESGCM
+                if _AESGCM is not None:
                     try:
-                        pt = aesgcm.decrypt(iv, combined, None)
+                        aesgcm = _AESGCM(key)
+                        plaintext = aesgcm.decrypt(nonce, ciphertext_with_tag, None)
                         if DEBUG:
-                            print(f'[DEBUG] AESGCM.decrypt success (no AAD) key={secret_key.hex()[:32]} iv={iv.hex()}', file=sys.stderr)
-                        return pt.decode('utf-8', errors='replace')
-                    except Exception:
-                        # try with version prefix as AAD
-                        pt = aesgcm.decrypt(iv, combined, aad)
+                            print(f'[DEBUG] AESGCM decrypt success with {key_name} key', file=sys.stderr)
+                        return plaintext.decode('utf-8', errors='replace'), 'ok'
+                    except Exception as e:
                         if DEBUG:
-                            print(f'[DEBUG] AESGCM.decrypt success (with AAD) key={secret_key.hex()[:32]} iv={iv.hex()}', file=sys.stderr)
-                        return pt.decode('utf-8', errors='replace')
-                except Exception as e:
-                    if DEBUG:
-                        print(f'[DEBUG] AESGCM.decrypt fallback failed: {e}', file=sys.stderr)
-                        traceback.print_exc(file=sys.stderr)
-            return None
+                            print(f'[DEBUG] AESGCM decrypt failed with {key_name} key: {e}', file=sys.stderr)
+                
+                # Fallback to PyCryptodome
+                if AES is not None and len(ciphertext_with_tag) >= 16:
+                    ciphertext = ciphertext_with_tag[:-16]
+                    tag = ciphertext_with_tag[-16:]
+                    try:
+                        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+                        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+                        if DEBUG:
+                            print(f'[DEBUG] PyCryptodome AES-GCM success with {key_name} key', file=sys.stderr)
+                        return plaintext.decode('utf-8', errors='replace'), 'ok'
+                    except Exception as e:
+                        if DEBUG:
+                            print(f'[DEBUG] PyCryptodome AES-GCM failed with {key_name} key: {e}', file=sys.stderr)
+            
+            # If v20 and all decryption failed, it's likely app-bound encryption
+            if version_prefix == b'v20':
+                return None, 'v20_app_bound'
+            return None, 'failed'
         else:
             # older Chromium used DPAPI directly on the value
             if win32crypt is None:
-                return None
+                return None, 'failed'
             try:
-                return win32crypt.CryptUnprotectData(encrypted_value, None, None, None, 0)[1].decode('utf-8', errors='replace')
+                plaintext = win32crypt.CryptUnprotectData(encrypted_value, None, None, None, 0)[1].decode('utf-8', errors='replace')
+                return plaintext, 'ok'
             except Exception:
                 if DEBUG:
                     print(f'[DEBUG] DPAPI unprotect on entry failed', file=sys.stderr)
-                return None
+                return None, 'failed'
     except Exception:
         if DEBUG:
             traceback.print_exc(file=sys.stderr)
-        return None
+        return None, 'failed'
 
 
-def extract_logins_from_login_db(login_db_path: Path, secret_key: bytes) -> list[dict]:
-    """Return list of {url, username, password} from a copied Login Data DB."""
+def extract_logins_from_login_db(login_db_path: Path, secret_key: bytes, app_bound_key: bytes = None) -> tuple[list[dict], dict]:
+    """Return list of {url, username, password} from a copied Login Data DB.
+    
+    Also returns stats dict with counts of successful, failed, and v20_app_bound decryptions.
+    """
     results = []
+    stats = {'ok': 0, 'failed': 0, 'v20_app_bound': 0, 'empty': 0, 'total': 0}
     if not login_db_path.exists():
-        return results
+        return results, stats
     # copy DB to temp file to safely read while browser may have it locked
     tmpdir = tempfile.mkdtemp(prefix='chrome_login_')
     tmpdb = Path(tmpdir) / 'LoginData.db'
@@ -193,94 +240,41 @@ def extract_logins_from_login_db(login_db_path: Path, secret_key: bytes) -> list
         conn = sqlite3.connect(str(tmpdb))
         cur = conn.cursor()
         cur.execute("SELECT origin_url, username_value, password_value FROM logins")
-        # prepare candidate keys: prefer provided secret_key, but include derived fallbacks
-        candidate_keys = []
-        if secret_key:
-            candidate_keys.append(secret_key)
-        candidate_keys.extend(generate_derived_keys())
-        if DEBUG:
-            try:
-                print(f'[DEBUG] Local State secret_key len={len(secret_key)} hex={secret_key.hex()}', file=sys.stderr)
-            except Exception:
-                print('[DEBUG] Local State secret_key present (unable to hex-print)', file=sys.stderr)
-        if DEBUG:
-            for idx, k in enumerate(candidate_keys):
-                try:
-                    print(f'[DEBUG] candidate key[{idx}] len={len(k)} hex={k.hex()}', file=sys.stderr)
-                except Exception:
-                    print(f'[DEBUG] candidate key[{idx}] present (unable to hex-print)', file=sys.stderr)
-        # additional derived candidates from the Local State key (common heuristics)
-        try:
-            if secret_key:
-                extra = []
-                # first/second halves
-                if len(secret_key) >= 16:
-                    extra.append(secret_key[:16])
-                if len(secret_key) >= 32:
-                    extra.append(secret_key[16:32])
-                # SHA256 of secret_key
-                try:
-                    extra.append(hashlib.sha256(secret_key).digest())
-                except Exception:
-                    pass
-                # add uniques
-                for ek in extra:
-                    if ek not in candidate_keys:
-                        candidate_keys.append(ek)
-                if DEBUG:
-                    for idx, k in enumerate(candidate_keys):
-                        try:
-                            print(f'[DEBUG] post-extra candidate key[{idx}] len={len(k)} hex={k.hex()}', file=sys.stderr)
-                        except Exception:
-                            print(f'[DEBUG] post-extra candidate key[{idx}] present', file=sys.stderr)
-        except Exception:
-            pass
+        
+        if DEBUG and secret_key:
+            print(f'[DEBUG] Using secret_key len={len(secret_key)} hex={secret_key.hex()}', file=sys.stderr)
+        if DEBUG and app_bound_key:
+            print(f'[DEBUG] Using app_bound_key len={len(app_bound_key)} hex={app_bound_key.hex()}', file=sys.stderr)
 
         for origin, username, encpw in cur.fetchall():
+            stats['total'] += 1
             pw = None
-            if encpw is not None:
+            status = 'empty'
+            
+            if encpw:
                 if DEBUG:
-                    try:
-                        sample_hex = (encpw[:64].hex() if isinstance(encpw, (bytes, bytearray, memoryview)) else str(encpw))
-                    except Exception:
-                        sample_hex = '<unprintable>'
-                    print(f'[DEBUG] trying entry url={origin} user={username} enc_len={len(encpw) if encpw is not None else 0} sample={sample_hex}', file=sys.stderr)
-
-                # try each candidate key until one yields a non-empty result
-                for idx, k in enumerate(candidate_keys):
-                    try:
-                        dec = decrypt_chrome_value(encpw, k)
-                    except Exception as e:
-                        dec = None
-                        if DEBUG:
-                            print(f'[DEBUG] key[{idx}] raised exception: {e}', file=sys.stderr)
-                            traceback.print_exc(file=sys.stderr)
-                    if dec is not None:
-                        if DEBUG:
-                            print(f'[DEBUG] key[{idx}] produced plaintext len={len(dec)}', file=sys.stderr)
-                        # accept even empty-string result (explicit decryption)
-                        pw = dec
-                        break
-
-                # as last resort, if DPAPI is available and not already tried, try it
-                if pw is None and win32crypt is not None:
-                    try:
-                        dp = win32crypt.CryptUnprotectData(encpw, None, None, None, 0)[1].decode('utf-8', errors='replace')
-                        if dp is not None:
-                            pw = dp
-                            if DEBUG:
-                                print(f'[DEBUG] DPAPI fallback produced plaintext len={len(dp)}', file=sys.stderr)
-                    except Exception as e:
-                        if DEBUG:
-                            print(f'[DEBUG] DPAPI fallback failed: {e}', file=sys.stderr)
-                            traceback.print_exc(file=sys.stderr)
-
-            results.append({'url': origin or '', 'user': username or '', 'password': pw or ''})
+                    version = encpw[:3].decode('ascii', errors='replace') if len(encpw) >= 3 else '???'
+                    print(f'[DEBUG] Entry: url={origin} user={username} version={version} enc_len={len(encpw)}', file=sys.stderr)
+                
+                pw, status = decrypt_chrome_value(encpw, secret_key, app_bound_key)
+                
+                if DEBUG:
+                    print(f'[DEBUG] Decrypt result: status={status} pw_len={len(pw) if pw else 0}', file=sys.stderr)
+            
+            stats[status] = stats.get(status, 0) + 1
+            results.append({
+                'url': origin or '', 
+                'user': username or '', 
+                'password': pw or '',
+                'decrypt_status': status
+            })
+            
         cur.close()
         conn.close()
-    except Exception:
-        # return what we have so far
-        pass
+    except Exception as e:
+        if DEBUG:
+            print(f'[DEBUG] Error reading Login Data: {e}', file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
     finally:
         try:
             if tmpdb.exists():
@@ -291,7 +285,7 @@ def extract_logins_from_login_db(login_db_path: Path, secret_key: bytes) -> list
             os.rmdir(tmpdir)
         except Exception:
             pass
-    return results
+    return results, stats
 
 
 def find_chrome_profile_dirs(root: Path) -> list[Path]:
@@ -326,10 +320,15 @@ def main(argv=None):
     global DEBUG
     DEBUG = bool(args.debug)
 
-    # load secret key from Local State once
-    secret_key = get_secret_key_from_local_state(LOCAL_STATE)
+    # load secret keys from Local State once
+    secret_key, app_bound_key = get_secret_key_from_local_state(LOCAL_STATE)
     if secret_key is None:
         print('[WARN] Could not obtain Chrome secret key from Local State; DPAPI or Local State missing or unsupported platform', file=sys.stderr)
+    if app_bound_key:
+        print('[INFO] Successfully extracted app-bound key (rare - usually protected by Chrome Elevation Service)', file=sys.stderr)
+    else:
+        print('[INFO] App-bound key not available - v20 encrypted passwords (Chrome v127+) cannot be decrypted', file=sys.stderr)
+        
     # allow explicit override from CLI for testing
     if args.master_key_hex:
         try:
@@ -353,6 +352,8 @@ def main(argv=None):
         profiles = find_chrome_profile_dirs(CHROME_USER_DATA)
 
     all_results: dict[str, list[dict]] = {}
+    total_stats = {'ok': 0, 'failed': 0, 'v20_app_bound': 0, 'empty': 0, 'total': 0}
+    
     for p in profiles:
         login_db = p / 'Login Data'
         if not login_db.exists():
@@ -368,32 +369,14 @@ def main(argv=None):
                 print('[ERROR] No secret key available and win32crypt not present to DPAPI-decrypt values', file=sys.stderr)
                 return 4
         try:
-            results = extract_logins_from_login_db(login_db, secret_key)
+            results, stats = extract_logins_from_login_db(login_db, secret_key, app_bound_key)
+            
+            # Aggregate stats
+            for k in total_stats:
+                total_stats[k] += stats.get(k, 0)
+            
             if args.debug:
-                print(f'[DEBUG] Profile: {p} — entries: {len(results)}', file=sys.stderr)
-                # print a sample of the first entry internals by reading DB directly
-                try:
-                    import sqlite3
-                    tmp = tempfile.mkdtemp(prefix='chrome_dbg_')
-                    tmpdb = Path(tmp) / 'db.db'
-                    shutil.copy2(str(login_db), str(tmpdb))
-                    conn = sqlite3.connect(str(tmpdb))
-                    cur = conn.cursor()
-                    cur.execute("SELECT origin_url, username_value, password_value FROM logins LIMIT 3")
-                    for origin, username, encpw in cur.fetchall():
-                        t = type(encpw)
-                        l = len(encpw) if encpw is not None else 0
-                        sample = (encpw[:16].hex() if isinstance(encpw, (bytes,bytearray,memoryview)) and l>0 else str(encpw)[:64])
-                        dec = None
-                        try:
-                            dec = decrypt_chrome_value(encpw, secret_key)
-                        except Exception as _:
-                            dec = None
-                        print(f'[DEBUG ROW] url={origin} user={username} enc_type={t} enc_len={l} enc_sample={sample} decrypted={dec}', file=sys.stderr)
-                    cur.close()
-                    conn.close()
-                except Exception as _:
-                    pass
+                print(f'[DEBUG] Profile: {p} — entries: {len(results)}, stats: {stats}', file=sys.stderr)
 
             if results:
                 all_results[p.name] = results
@@ -403,11 +386,21 @@ def main(argv=None):
                 return 5
             else:
                 if args.non_interactive:
-                    # silently continue
                     continue
                 else:
                     print(f'Warning: failed to extract for {p}: {e}', file=sys.stderr)
                     continue
+
+    # Print summary
+    print(f'\n=== Decryption Summary ===', file=sys.stderr)
+    print(f'Total entries: {total_stats["total"]}', file=sys.stderr)
+    print(f'Successfully decrypted: {total_stats["ok"]}', file=sys.stderr)
+    print(f'Empty passwords: {total_stats["empty"]}', file=sys.stderr)
+    print(f'v20 App-Bound (Chrome v127+ protected): {total_stats["v20_app_bound"]}', file=sys.stderr)
+    print(f'Failed: {total_stats["failed"]}', file=sys.stderr)
+    if total_stats["v20_app_bound"] > 0:
+        print(f'\n[NOTE] {total_stats["v20_app_bound"]} passwords use Chrome v127+ App-Bound Encryption.', file=sys.stderr)
+        print(f'       These cannot be decrypted outside of Chrome due to elevation service protection.', file=sys.stderr)
 
     # output
     out_data = all_results
@@ -420,10 +413,10 @@ def main(argv=None):
             import csv
             with out_path.open('w', newline='', encoding='utf-8') as fh:
                 w = csv.writer(fh)
-                w.writerow(['profile', 'url', 'user', 'password'])
+                w.writerow(['profile', 'url', 'user', 'password', 'decrypt_status'])
                 for prof, items in out_data.items():
                     for it in items:
-                        w.writerow([prof, it.get('url',''), it.get('user',''), it.get('password','')])
+                        w.writerow([prof, it.get('url',''), it.get('user',''), it.get('password',''), it.get('decrypt_status','')])
         return 0
     else:
         if args.format == 'json':
@@ -431,10 +424,10 @@ def main(argv=None):
         else:
             import csv
             w = csv.writer(sys.stdout)
-            w.writerow(['profile', 'url', 'user', 'password'])
+            w.writerow(['profile', 'url', 'user', 'password', 'decrypt_status'])
             for prof, items in out_data.items():
                 for it in items:
-                    w.writerow([prof, it.get('url',''), it.get('user',''), it.get('password','')])
+                    w.writerow([prof, it.get('url',''), it.get('user',''), it.get('password',''), it.get('decrypt_status','')])
         return 0
 
 

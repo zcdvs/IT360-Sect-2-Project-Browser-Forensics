@@ -331,37 +331,23 @@ if __name__ == "__main__":
     # Optionally read logins.json from each profile and correlate to history
     if args.include_logins:
         try:
-            # If user requested decryption, try to import known decryptor modules.
+            # If user requested decryption, load the local firefox_decryptor.py
             decrypt_module = None
             if args.decrypt_logins:
-                # Try installed decryptor modules first
                 try:
-                    import firefox_decrypt as _fd
-                    decrypt_module = _fd
-                    if args.debug:
-                        print("[DEBUG] using decrypt module: firefox_decrypt (installed)")
-                except Exception:
-                    try:
-                        import mozilla_decrypt as _md
-                        decrypt_module = _md
+                    import importlib.util
+                    local_path = Path(__file__).parent / 'firefox_decryptor.py'
+                    if local_path.exists():
+                        spec = importlib.util.spec_from_file_location('firefox_decryptor', str(local_path))
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        decrypt_module = module
                         if args.debug:
-                            print("[DEBUG] using decrypt module: mozilla_decrypt (installed)")
-                    except Exception:
-                        # Try to load the local 'firefox_decryptor.py' shipped in this repo
-                        try:
-                            import importlib.util
-                            local_path = Path(__file__).parent / 'firefox_decryptor.py'
-                            if local_path.exists():
-                                spec = importlib.util.spec_from_file_location('firefox_decryptor', str(local_path))
-                                module = importlib.util.module_from_spec(spec)
-                                spec.loader.exec_module(module)
-                                decrypt_module = module
-                                if args.debug:
-                                    print(f"[DEBUG] using local decryptor module: {local_path}")
-                        except Exception:
-                            decrypt_module = None
-                if decrypt_module is None:
-                    print("WARNING: decryptor module not found. Decryption will be skipped.\nTo enable decryption, install a compatible tool or library and re-run, for example:\n  pip install firefox-decrypt  # or put firefox_decrypt.py/firefox_decryptor.py on your PATH")
+                            print(f"[DEBUG] using local decryptor module: {local_path}")
+                    else:
+                        print(f"WARNING: firefox_decryptor.py not found at {local_path}. Decryption will be skipped.")
+                except Exception as e:
+                    print(f"WARNING: failed to load firefox_decryptor.py: {e}. Decryption will be skipped.")
             # Build a lightweight history_map: host -> (last_visit_micro, visit_count)
             history_map = {}
             for profile_name, db_copy in copies:

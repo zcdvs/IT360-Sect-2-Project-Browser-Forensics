@@ -27,6 +27,7 @@ SCRIPTS = [
     ("chrome_history", [sys.executable, "Browser Data/Chrome/Chrome_History.py", "--output"]),
     ("chrome_extensions", [sys.executable, "Browser Data/Chrome/Chrome_Extensions.py", "--output"]),
     ("chrome_sessions", [sys.executable, "Browser Data/Chrome/Chrome_Sessions.py", "--output", "--include-cookie-only", "--full-report"]),
+    ("chrome_autofill", [sys.executable, "Browser Data/Chrome/Chrome_Autofill.py", "--output"]),
     ("firefox_downloads", [sys.executable, "Browser Data/Firefox/Firefox_Downloads.py", "--output"]),
     ("firefox_history", [sys.executable, "Browser Data/Firefox/Firefox_History.py", "--output", "--full-report"]),
     ("firefox_extensions", [sys.executable, "Browser Data/Firefox/Firefox_Extensions.py", "--output"]),
@@ -148,13 +149,13 @@ def merge_csvs(output_dir: Path, merged_name: str = 'merged_all.csv', filter_tok
                             if not found:
                                 continue
                     rows.append(r2)
-                    headers.update(r2.keys())
+                    headers.update(k for k in r2.keys() if k is not None)
         except Exception:
             # skip files that are not CSV or unreadable
             continue
 
-    # ensure deterministic column order: source file last
-    headers = list(sorted(h for h in headers if h != '_source_file')) + ['_source_file']
+    # ensure deterministic column order: source file last; filter out None values
+    headers = list(sorted(h for h in headers if h is not None and h != '_source_file')) + ['_source_file']
     merged_path = output_dir / merged_name
     with open(merged_path, 'w', newline='', encoding='utf-8') as out_f:
         w = csv.DictWriter(out_f, fieldnames=headers)
@@ -167,14 +168,65 @@ def merge_csvs(output_dir: Path, merged_name: str = 'merged_all.csv', filter_tok
     return merged_path, len(rows)
 
 
-def generate_html_report(output_dir: Path, merged_csv_path: Path, discovered_passwords: dict | None = None, include_passwords: bool = True):
-    """Generate a small HTML report summarizing counts per script and suspicious items."""
+def read_autofill_data(output_dir: Path) -> list:
+    """Read autofill data from the chrome_autofill.csv file in the output directory.
+    
+    Returns a list of dicts with keys: name, value, date_created, date_last_used, count
+    """
+    autofill_csv = output_dir / 'chrome_autofill.csv'
+    if not autofill_csv.exists():
+        return []
+    
+    autofill_entries = []
+    try:
+        with open(autofill_csv, newline='', encoding='utf-8') as fh:
+            rdr = csv.DictReader(fh)
+            for row in rdr:
+                # Skip rows that aren't from the autofill table (in case of multi-table exports)
+                if row.get('table') and row.get('table') != 'autofill':
+                    continue
+                entry = {
+                    'name': row.get('name', ''),
+                    'value': row.get('value', ''),
+                    'date_created': row.get('date_created', ''),
+                    'date_last_used': row.get('date_last_used', ''),
+                    'count': row.get('count', ''),
+                }
+                # Only include entries that have both name and value
+                if entry['name'] and entry['value']:
+                    autofill_entries.append(entry)
+    except Exception:
+        pass
+    
+    return autofill_entries
+
+
+def generate_html_report(output_dir: Path, merged_csv_path: Path, discovered_passwords: dict | None = None, include_passwords: bool = True, discovered_autofill: list | None = None, include_addresses: bool = True, chrome_passwords: dict | None = None, chrome_password_stats: dict | None = None):
+    """Generate a small HTML report summarizing counts per script and suspicious items.
+    
+    Args:
+        chrome_passwords: Dict of {profile: [pw list]} for successfully decrypted Chrome passwords
+        chrome_password_stats: Dict with 'ok', 'v20_app_bound', 'failed', 'empty', 'total' counts
+    """
     per_source = {}
     reason_counts = {}
     total_rows = 0
     total_suspicious = 0
     # collect suspicious extension rows for details
     suspicious_extension_rows = {}
+
+    # Address-related field names to filter out if include_addresses is False
+    ADDRESS_FIELDS = {'address', 'street', 'city', 'state', 'zip', 'zipcode', 'postal', 'country', 
+                      'address1', 'address2', 'addr', 'apartment', 'apt', 'suite', 'unit',
+                      'shipping', 'billing', 'home', 'work', 'phone', 'telephone', 'mobile', 'cell'}
+
+    def is_address_field(field_name: str) -> bool:
+        """Check if a field name looks like address/location data."""
+        fn_lower = field_name.lower()
+        for addr_term in ADDRESS_FIELDS:
+            if addr_term in fn_lower:
+                return True
+        return False
 
     # helper: map reason code to human-friendly explanation
     REASON_EXPLANATIONS = {
@@ -269,9 +321,9 @@ def generate_html_report(output_dir: Path, merged_csv_path: Path, discovered_pas
             out.write(f'<tr><td>{src}</td><td>{info["rows"]}</td><td>{info["suspicious"]}</td></tr>')
         out.write('</table>')
 
-        # Discovered passwords section
+        # Discovered passwords section (Firefox)
         if include_passwords and discovered_passwords:
-            out.write('<h2>Discovered Passwords (per profile)</h2>')
+            out.write('<h2>Discovered Firefox Passwords (per profile)</h2>')
             for profile, pwlist in discovered_passwords.items():
                 out.write(f'<h3>Profile: {profile} ({len(pwlist)} entries)</h3>')
                 out.write('<table><tr><th>Website</th><th>Username</th><th>Password</th></tr>')
@@ -282,8 +334,78 @@ def generate_html_report(output_dir: Path, merged_csv_path: Path, discovered_pas
                     out.write(f'<tr><td>{url}</td><td>{user}</td><td>{pwd}</td></tr>')
                 out.write('</table>')
         elif discovered_passwords and not include_passwords:
-            out.write('<h2>Discovered Passwords</h2>')
+            out.write('<h2>Discovered Firefox Passwords</h2>')
             out.write('<p>Passwords were discovered but omitted from this report by request (privacy option).</p>')
+
+        # Discovered Chrome passwords section
+        if include_passwords and (chrome_passwords or chrome_password_stats):
+            out.write('<h2>Discovered Chrome Passwords</h2>')
+            
+            # Show stats summary including protected passwords
+            if chrome_password_stats:
+                total = chrome_password_stats.get('total', 0)
+                decrypted = chrome_password_stats.get('ok', 0)
+                protected = chrome_password_stats.get('v20_app_bound', 0)
+                empty = chrome_password_stats.get('empty', 0)
+                failed = chrome_password_stats.get('failed', 0)
+                
+                out.write(f'<p><strong>Summary:</strong> {total} total password entries found</p>')
+                out.write('<ul>')
+                if decrypted > 0:
+                    out.write(f'<li><strong>{decrypted}</strong> passwords successfully decrypted</li>')
+                if protected > 0:
+                    out.write(f'<li><strong>{protected}</strong> passwords protected by Chrome v127+ App-Bound Encryption (cannot be decrypted outside Chrome)</li>')
+                if empty > 0:
+                    out.write(f'<li><strong>{empty}</strong> entries with no saved password</li>')
+                if failed > 0:
+                    out.write(f'<li><strong>{failed}</strong> passwords failed to decrypt</li>')
+                out.write('</ul>')
+            
+            # Show decrypted passwords
+            if chrome_passwords:
+                for profile, pwlist in chrome_passwords.items():
+                    out.write(f'<h3>Profile: {profile} ({len(pwlist)} decrypted)</h3>')
+                    out.write('<table><tr><th>Website</th><th>Username</th><th>Password</th></tr>')
+                    for rec in pwlist:
+                        url = rec.get('url','')
+                        user = rec.get('user','')
+                        pwd = rec.get('password','')
+                        out.write(f'<tr><td>{url}</td><td>{user}</td><td>{pwd}</td></tr>')
+                    out.write('</table>')
+            elif chrome_password_stats and chrome_password_stats.get('ok', 0) == 0 and chrome_password_stats.get('v20_app_bound', 0) > 0:
+                out.write('<p><em>No Chrome passwords could be decrypted. All saved passwords are protected by Chrome\'s newer App-Bound Encryption feature (introduced in Chrome v127, July 2024), which prevents external tools from accessing them.</em></p>')
+        elif (chrome_passwords or chrome_password_stats) and not include_passwords:
+            out.write('<h2>Discovered Chrome Passwords</h2>')
+            out.write('<p>Chrome passwords were discovered but omitted from this report by request (privacy option).</p>')
+            if chrome_password_stats and chrome_password_stats.get('v20_app_bound', 0) > 0:
+                protected = chrome_password_stats.get('v20_app_bound', 0)
+                out.write(f'<p><em>Note: {protected} passwords are protected by Chrome v127+ App-Bound Encryption and could not be decrypted.</em></p>')
+
+        # Discovered Autofill section
+        if discovered_autofill:
+            # Filter out address fields if requested
+            if include_addresses:
+                autofill_to_show = discovered_autofill
+            else:
+                autofill_to_show = [entry for entry in discovered_autofill if not is_address_field(entry.get('name', ''))]
+            
+            if autofill_to_show:
+                out.write(f'<h2>Discovered Autofill Data ({len(autofill_to_show)} entries)</h2>')
+                if not include_addresses:
+                    out.write('<p><em>Note: Address-related fields have been omitted from this report by request.</em></p>')
+                out.write('<table><tr><th>Field Name</th><th>Value</th><th>Date Created</th><th>Date Last Used</th><th>Use Count</th></tr>')
+                for entry in autofill_to_show:
+                    name = entry.get('name', '')
+                    value = entry.get('value', '')
+                    date_created = entry.get('date_created', '')
+                    date_last_used = entry.get('date_last_used', '')
+                    count = entry.get('count', '')
+                    out.write(f'<tr><td>{name}</td><td>{value}</td><td>{date_created}</td><td>{date_last_used}</td><td>{count}</td></tr>')
+                out.write('</table>')
+            elif discovered_autofill and not include_addresses:
+                out.write('<h2>Discovered Autofill Data</h2>')
+                out.write('<p>Autofill data was discovered but all entries were address-related and omitted by request.</p>')
+
         out.write('<h2>All suspicious reasons (with explanations)</h2>')
         out.write('<table><tr><th>Reason</th><th>Count</th><th>Why it matters</th></tr>')
         # show all reasons with a human-friendly explanation when available
@@ -387,6 +509,64 @@ def run_firefox_decryptor_for_profiles(debug=False):
     return result
 
 
+def run_chrome_decryptor(debug=False):
+    """Run chrome_decrypt.py and return tuple of (passwords_dict, stats_dict).
+    
+    passwords_dict: {profile_name: [list of {url, user, password, decrypt_status}]}
+    stats_dict: {'ok': N, 'v20_app_bound': N, 'failed': N, 'empty': N, 'total': N}
+    
+    Only includes successfully decrypted passwords (status='ok') in passwords_dict.
+    """
+    cmd = [sys.executable, str(Path('Browser Data') / 'Chrome' / 'chrome_decrypt.py'), '-f', 'json', '--non-fatal-decryption']
+    if debug:
+        cmd.append('--debug')
+        print(f"Running Chrome decryptor: {' '.join(cmd)}")
+    
+    passwords = {}
+    stats = {'ok': 0, 'v20_app_bound': 0, 'failed': 0, 'empty': 0, 'total': 0}
+    
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except Exception as e:
+        if debug:
+            print(f"Chrome decryptor failed to start: {e}")
+        return passwords, stats
+    
+    if proc.returncode != 0 and debug:
+        print(f"Chrome decryptor returned {proc.returncode}; stderr: {proc.stderr}")
+    
+    # Parse JSON output
+    try:
+        data = json.loads(proc.stdout)
+        # data is {profile_name: [list of entries]}
+        if isinstance(data, dict):
+            for profile, entries in data.items():
+                decrypted = []
+                for entry in entries:
+                    status = entry.get('decrypt_status', 'failed')
+                    stats['total'] += 1
+                    stats[status] = stats.get(status, 0) + 1
+                    
+                    # Only include successfully decrypted passwords
+                    if status == 'ok' and entry.get('password'):
+                        decrypted.append({
+                            'url': entry.get('url', ''),
+                            'user': entry.get('user', ''),
+                            'password': entry.get('password', '')
+                        })
+                
+                if decrypted:
+                    passwords[profile] = decrypted
+    except json.JSONDecodeError as e:
+        if debug:
+            print(f"Failed to parse Chrome decryptor JSON output: {e}")
+    except Exception as e:
+        if debug:
+            print(f"Error processing Chrome decryptor output: {e}")
+    
+    return passwords, stats
+
+
 def main():
     parser = argparse.ArgumentParser(description='Run all browser analysis scripts and merge outputs')
     parser.add_argument('--outdir', default='outputs', help='Directory to store outputs')
@@ -401,6 +581,7 @@ def main():
     parser.add_argument('--filter', help='Generic filter: `column:substring` or `substring` to search any field')
     parser.add_argument('--html-report', action='store_true', help='Produce a small HTML summary report')
     parser.add_argument('--no-passwords', action='store_true', help='Do not include discovered passwords in the HTML report')
+    parser.add_argument('--no-addresses', action='store_true', help='Do not include address-related autofill fields in the HTML report')
     args = parser.parse_args()
 
     # compute include/exclude lists
@@ -440,16 +621,45 @@ def main():
         print("No CSVs found to merge.")
 
     discovered_passwords = None
+    discovered_autofill = None
+    chrome_passwords = None
+    chrome_password_stats = None
+    
     if args.html_report and not args.no_passwords:
         # attempt to discover passwords per Firefox profile; only include successful profiles
         try:
             discovered_passwords = run_firefox_decryptor_for_profiles(debug=args.debug)
         except Exception as e:
-            print(f"Warning: password discovery failed: {e}")
+            print(f"Warning: Firefox password discovery failed: {e}")
+        
+        # attempt to discover Chrome passwords
+        try:
+            chrome_passwords, chrome_password_stats = run_chrome_decryptor(debug=args.debug)
+            if args.debug:
+                print(f"Chrome password stats: {chrome_password_stats}")
+        except Exception as e:
+            print(f"Warning: Chrome password discovery failed: {e}")
+
+    if args.html_report:
+        # read autofill data from the output directory
+        try:
+            discovered_autofill = read_autofill_data(outdir)
+            if discovered_autofill and args.debug:
+                print(f"Found {len(discovered_autofill)} autofill entries")
+        except Exception as e:
+            print(f"Warning: autofill data read failed: {e}")
 
     if args.html_report and merged_path:
         try:
-            report_path = generate_html_report(outdir, merged_path, discovered_passwords=discovered_passwords, include_passwords=not args.no_passwords)
+            report_path = generate_html_report(
+                outdir, merged_path, 
+                discovered_passwords=discovered_passwords, 
+                include_passwords=not args.no_passwords,
+                discovered_autofill=discovered_autofill,
+                include_addresses=not args.no_addresses,
+                chrome_passwords=chrome_passwords,
+                chrome_password_stats=chrome_password_stats
+            )
             print(f"HTML report: {report_path}")
         except Exception as e:
             print(f"Failed to generate HTML report: {e}")
