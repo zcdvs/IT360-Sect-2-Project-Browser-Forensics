@@ -1,3 +1,41 @@
+# IT360 Project
+
+## Overview
+A tool for analyzing browser-related information such as cookies, extensions, download history, browsing history, login sessions, and cache/autofill data.
+
+## Features
+The tool can extract and analyze:
+
+- **Cookies**
+  - Name, value, domain, expiration
+  - Secure & non-secure cookies
+- **Browsing history**
+  - URLs and timestamps
+  - Chronological timeline creation
+- **Download history**
+  - File names and URLs
+- **Extensions metadata**
+  - Detect and flag suspicious extensions (based on permissions)
+
+## Target Platform
+- Primary: Chrome and Firefox on **Windows and MacOS**  
+- Future: Potential support for **Linux** and other browsers
+
+## Implementation
+- **Language:** Python  
+- **Artifact selection:** User-focused data (session history, browser data, login information, etc.)  
+- **Output format:**  
+  - Human-readable text logs  
+  - CSV files for further analysis
+  - HTML generated report of the data collection 
+
+## Potential Features (Stretch Goals)
+- Cross-platform support (Windows, MacOS, and Linux)
+- Support for more browsers
+- GUI interface
+- Scheduling tool execution
+- Data integrity through hashing
+
 # Using `run_all.py` and `run_all_gui.py`
 
 This document explains how to use the `run_all.py` and `run_all_gui.py` scripts included in this repository to collect browser artifacts for digital forensics purposes. The instructions assume the repository layout includes the `src/` scripts such as `Chrome_History.py`, `Firefox_Downloads.py`, etc., and that these driver scripts call those modules to extract data from browser profiles.
@@ -78,77 +116,3 @@ Get-FileHash 'C:\forensic\reports\victim\*' -Algorithm SHA256
 
 **Security, Privacy & Legal**
 - Only analyze systems and data you are authorized to examine. Follow applicable laws, organizational policies, and privacy rules.
-
-## Project Overview
-
-This project provides a set of Python scripts in the `src/` directory that extract browser artifacts for Chrome and Firefox. The intent is to centralize artifact extraction so outputs can be ingested into forensic analysis tools and timelines.
-
-Below is a brief summary of the main files in `src/`, their purpose, typical inputs, outputs, and forensic notes.
-
-- `Chrome_Autofill.py`: Extracts Chrome autofill/form data collected by the browser.
-  - Inputs: Chrome profile `Web Data` SQLite file (copied).
-  - Outputs: CSV/JSON rows of form field names, values, and timestamps.
-  - Notes: Sensitive PII likely present. Treat outputs as evidence and hash accordingly.
-
-- `chrome_decrypt.py`: Utilities to decrypt Chrome-protected data (saved passwords, cookies) on Windows.
-  - Inputs: Encrypted blobs from Chrome (`Login Data`, `Cookies`) and access to DPAPI context (user account keys) or local master key where applicable.
-  - Outputs: Decrypted plaintext values or an error/log indicating missing keys.
-  - Notes: Decryption may require running as the same Windows user account or exported DPAPI keys; document access and authorization.
-
-- `Chrome_Downloads.py`: Extracts download history and metadata from Chrome.
-  - Inputs: Chrome `History` or `Downloads` SQLite DB fields.
-  - Outputs: CSV/JSON of downloaded file names, source URLs, target paths, and timestamps.
-  - Notes: Useful for correlating file artifacts on disk with browser activity.
-
-- `Chrome_Extensions.py`: Lists installed Chrome extensions and metadata.
-  - Inputs: Chrome profile extension state directories and `Preferences` JSON.
-  - Outputs: CSV/JSON of extension IDs, names (where available), and install state.
-  - Notes: Flag privacy/cleaner extensions that could alter browser artifact availability.
-
-- `Chrome_History.py`: Parses Chrome browsing history entries.
-  - Inputs: Chrome `History` SQLite (URLs, visits, visit_time fields).
-  - Outputs: CSV/JSON of visited URLs, titles, visit counts, and timestamps.
-  - Notes: Convert Chrome's internal timestamps (WebKit/epoch) to human-readable UTC for timelines.
-
-- `Chrome_Sessions.py`: Extracts session/tab information (open tabs, saved sessions).
-  - Inputs: Session files (e.g., `Current Session`, `Current Tabs`, `Session_*`) and session JSON blobs.
-  - Outputs: Lists of open URLs, window/tab order, and last-write timestamps.
-  - Notes: Helpful for reconstructing the user's browsing state at a point in time.
-
-- `firefox_decryptor.py`: Decrypts Firefox-protected secrets (if implemented).
-  - Inputs: Firefox `logins.json` and `key4.db` or `key3.db` depending on profile.
-  - Outputs: Decrypted saved logins/cookies when keys are available.
-  - Notes: Requires access to the profile's private keys; similar authorization considerations as Chrome.
-
-- `Firefox_Downloads.py`: Extracts Firefox download history and metadata.
-  - Inputs: Firefox `places.sqlite` and download-related DB/tables.
-  - Outputs: CSV/JSON of downloads with timestamps and source URIs.
-
-- `Firefox_Extensions.py`: Lists Firefox add-ons and extensions.
-  - Inputs: Firefox profile extension metadata files.
-  - Outputs: CSV/JSON of installed add-ons and relevant metadata.
-
-- `Firefox_History.py`: Parses Firefox browsing history.
-  - Inputs: `places.sqlite` (history/bookmarks) and other profile artifacts.
-  - Outputs: CSV/JSON of visited URIs, titles, visit counts, and timestamps.
-
-- `Firefox_Sessions.py`: Extracts Firefox session data (open tabs, session restore files).
-  - Inputs: `sessionstore-backups` and current session files in the profile.
-  - Outputs: Lists of open tabs, windows, and last-used timestamps.
-
-- `run_all.py`: Command-line driver that orchestrates the extraction modules.
-  - Inputs: May use default profile locations or accept profile paths and output directory arguments.
-  - Outputs: Aggregated CSV/JSON reports written to the configured `data/` or output folder.
-  - Notes: Best used against copies of profiles; check `--help` for supported flags.
-
-- `run_all_gui.py`: GUI wrapper around the same extraction functionality.
-  - Inputs/Outputs: Same as `run_all.py`, but presented via an interactive interface to choose profiles and run modules.
-  - Notes: Convenient for analysts who prefer a guided workflow; still follow forensic copy practices.
-
-Design Intent & Analysis Workflow
-- Centralize artifact extraction: Each per-browser script focuses on a single artifact class so outputs are normalized for later ingestion.
-- Support reproducible analysis: `run_all.py` and `run_all_gui.py` should produce consistent exports that can be hashed and archived.
-- Enable timeline-building: Outputs (history, downloads, session timestamps) are intended to be combined into timelines or fed into timeline tools.
-- Separate decryption logic: Decryptors are isolated (`chrome_decrypt.py`, `firefox_decryptor.py`) to make authorization and key handling explicit.
-
-If you want, I can now inspect `run_all.py` and `run_all_gui.py` to extract their exact CLI flags and GUI options, and then update this document with specific commands and the precise output folder used by the current implementation.
