@@ -17,10 +17,12 @@ from __future__ import annotations
 import os
 import sys
 import csv
+import hashlib
 import threading
 import subprocess
 import webbrowser
 import time
+import datetime
 from pathlib import Path
 try:
     from run_all import SCRIPTS as RUN_ALL_SCRIPTS
@@ -396,6 +398,7 @@ class RunAllGUI(tk.Tk):
         ttk.Button(btn_frame, text='Show Outputs Folder', command=self._show_output_folder).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text='Run Script...', command=self._open_script_runner).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text='Open Last Report', command=self._open_last_report).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text='Generate Hashes', command=self._generate_hashes).pack(side=tk.LEFT, padx=4)
 
         # Logs area
         logs_frame = ttk.Frame(self)
@@ -751,6 +754,75 @@ class RunAllGUI(tk.Tk):
             webbrowser.open(str(latest))
         except Exception as e:
             messagebox.showerror('Failed', f'Could not open report: {e}')
+
+    def _generate_hashes(self):
+        """Generate SHA-256 hashes of all CSV files and report.html in the most recent output folder.
+        
+        Creates a file_hashes.txt for forensic integrity verification.
+        """
+        base_dir = Path(self.last_outdir.get() or OUTPUTS_DIR)
+        if not base_dir.exists():
+            messagebox.showerror('Missing', f'Output folder does not exist: {base_dir}')
+            return
+        
+        # Find the most recent timestamped output folder
+        output_dirs = []
+        for subdir in base_dir.iterdir():
+            if subdir.is_dir():
+                # Check if it has any CSV or HTML files
+                has_files = any(subdir.glob('*.csv')) or (subdir / 'report.html').exists()
+                if has_files:
+                    output_dirs.append(subdir)
+        
+        if not output_dirs:
+            messagebox.showinfo('No Output', 'No output folders with CSV/HTML files found.')
+            return
+        
+        # Sort by directory name (timestamp) descending to get most recent
+        output_dirs.sort(key=lambda p: p.name, reverse=True)
+        target_dir = output_dirs[0]
+        
+        # Collect all files to hash
+        files_to_hash = []
+        for csv_file in sorted(target_dir.glob('*.csv')):
+            files_to_hash.append(csv_file)
+        report_html = target_dir / 'report.html'
+        if report_html.exists():
+            files_to_hash.append(report_html)
+        
+        if not files_to_hash:
+            messagebox.showinfo('No Files', f'No CSV or HTML files found in {target_dir}')
+            return
+        
+        # Generate hashes
+        hash_lines = []
+        hash_lines.append(f"# File Integrity Hashes (SHA-256)")
+        hash_lines.append(f"# Generated: {datetime.datetime.now().isoformat()}")
+        hash_lines.append(f"# Output folder: {target_dir.name}")
+        hash_lines.append(f"# Algorithm: SHA-256")
+        hash_lines.append("")
+        
+        for file_path in files_to_hash:
+            try:
+                sha256 = hashlib.sha256()
+                with open(file_path, 'rb') as f:
+                    for chunk in iter(lambda: f.read(65536), b''):
+                        sha256.update(chunk)
+                file_hash = sha256.hexdigest()
+                hash_lines.append(f"{file_hash}  {file_path.name}")
+            except Exception as e:
+                hash_lines.append(f"ERROR  {file_path.name}  ({e})")
+        
+        # Write hash file
+        hash_file = target_dir / 'file_hashes.txt'
+        try:
+            hash_file.write_text('\n'.join(hash_lines), encoding='utf-8')
+            self._log(f"\n[Hashes] Generated {hash_file}\n")
+            self._log(f"[Hashes] {len(files_to_hash)} files hashed\n")
+            messagebox.showinfo('Hashes Generated', 
+                f'File integrity hashes written to:\n{hash_file}\n\n{len(files_to_hash)} files hashed.')
+        except Exception as e:
+            messagebox.showerror('Error', f'Failed to write hash file: {e}')
 
 
 def main():
