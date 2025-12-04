@@ -17,21 +17,24 @@ import json
 
 import shutil
 
+# Directory containing this script and all the individual scripts
+SRC_DIR = Path(__file__).resolve().parent
+
 # Globals used by run_all() for simple filtering; set by main()
 RUN_FILTER_INCLUDE = None
 RUN_FILTER_EXCLUDE = None
 
 SCRIPTS = [
     # (label, command args list)
-    ("chrome_downloads", [sys.executable, "Browser Data/Chrome/Chrome_Downloads.py", "--output"]),
-    ("chrome_history", [sys.executable, "Browser Data/Chrome/Chrome_History.py", "--output"]),
-    ("chrome_extensions", [sys.executable, "Browser Data/Chrome/Chrome_Extensions.py", "--output"]),
-    ("chrome_sessions", [sys.executable, "Browser Data/Chrome/Chrome_Sessions.py", "--output", "--include-cookie-only", "--full-report"]),
-    ("chrome_autofill", [sys.executable, "Browser Data/Chrome/Chrome_Autofill.py", "--output"]),
-    ("firefox_downloads", [sys.executable, "Browser Data/Firefox/Firefox_Downloads.py", "--output"]),
-    ("firefox_history", [sys.executable, "Browser Data/Firefox/Firefox_History.py", "--output", "--full-report"]),
-    ("firefox_extensions", [sys.executable, "Browser Data/Firefox/Firefox_Extensions.py", "--output"]),
-    ("firefox_sessions", [sys.executable, "Browser Data/Firefox/Firefox_Sessions.py", "--output", "--include-cookie-only", "--full-report"]),
+    ("chrome_downloads", [sys.executable, "Chrome_Downloads.py", "--output"]),
+    ("chrome_history", [sys.executable, "Chrome_History.py", "--output"]),
+    ("chrome_extensions", [sys.executable, "Chrome_Extensions.py", "--output"]),
+    ("chrome_sessions", [sys.executable, "Chrome_Sessions.py", "--output", "--include-cookie-only", "--full-report"]),
+    ("chrome_autofill", [sys.executable, "Chrome_Autofill.py", "--output"]),
+    ("firefox_downloads", [sys.executable, "Firefox_Downloads.py", "--output"]),
+    ("firefox_history", [sys.executable, "Firefox_History.py", "--output", "--full-report"]),
+    ("firefox_extensions", [sys.executable, "Firefox_Extensions.py", "--output"]),
+    ("firefox_sessions", [sys.executable, "Firefox_Sessions.py", "--output", "--include-cookie-only", "--full-report"]),
 ]
 
 
@@ -69,7 +72,7 @@ def run_all(output_dir: Path, debug=False):
         if debug:
             print(f"Running: {' '.join(cmd)}")
         try:
-            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=SRC_DIR)
             results.append((label, out_path, proc.returncode, proc.stdout, proc.stderr))
             if debug:
                 print(proc.stdout)
@@ -483,11 +486,11 @@ def run_firefox_decryptor_for_profiles(debug=False):
             continue
 
         profile_path = str(p)
-        cmd = [sys.executable, str(Path('Browser Data') / 'Firefox' / 'firefox_decryptor.py'), profile_path, '-f', 'json', '-n', '--non-fatal-decryption']
+        cmd = [sys.executable, str(SRC_DIR / 'firefox_decryptor.py'), profile_path, '-f', 'json', '-n', '--non-fatal-decryption']
         if debug:
             print(f"Running decryptor for profile: {profile_path}")
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=SRC_DIR)
         except Exception as e:
             if debug:
                 print(f"Decryptor failed to start for {profile_path}: {e}")
@@ -517,7 +520,7 @@ def run_chrome_decryptor(debug=False):
     
     Only includes successfully decrypted passwords (status='ok') in passwords_dict.
     """
-    cmd = [sys.executable, str(Path('Browser Data') / 'Chrome' / 'chrome_decrypt.py'), '-f', 'json', '--non-fatal-decryption']
+    cmd = [sys.executable, str(SRC_DIR / 'chrome_decrypt.py'), '-f', 'json', '--non-fatal-decryption']
     if debug:
         cmd.append('--debug')
         print(f"Running Chrome decryptor: {' '.join(cmd)}")
@@ -526,7 +529,7 @@ def run_chrome_decryptor(debug=False):
     stats = {'ok': 0, 'v20_app_bound': 0, 'failed': 0, 'empty': 0, 'total': 0}
     
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=SRC_DIR)
     except Exception as e:
         if debug:
             print(f"Chrome decryptor failed to start: {e}")

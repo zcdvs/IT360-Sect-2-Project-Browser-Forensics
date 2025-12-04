@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import csv
+import shutil
+import tempfile
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -134,7 +136,7 @@ def write_csv(filename, data_dict):
             writer.writerow([])
     print(f"[+] Data exported to {filename}")
 
-def export_chrome_autofill_data():
+def export_chrome_autofill_data(output_file=None):
     """Main export function."""
     chrome_data_path = os.path.join(os.environ["LOCALAPPDATA"], 
                                     r"Google\Chrome\User Data\Default")
@@ -144,8 +146,16 @@ def export_chrome_autofill_data():
         print(f"[ERROR] Chrome Web Data file not found at: {web_data_path}")
         return
 
-    # Fixed filename
-    output_filename = "Autofill & Address.csv"
+    # Copy DB to temp file to avoid locking issues when Chrome is open
+    temp_dir = tempfile.mkdtemp(prefix="chrome_autofill_")
+    temp_db = os.path.join(temp_dir, "Web Data")
+    try:
+        shutil.copy2(web_data_path, temp_db)
+    except Exception as e:
+        print(f"[ERROR] Could not copy Web Data to temp: {e}")
+        return
+
+    output_filename = output_file if output_file else "Autofill & Address.csv"
 
     print(f"[*] Reading from: {web_data_path}")
     print("[*] Extracting table: 'autofill'...")
@@ -155,10 +165,21 @@ def export_chrome_autofill_data():
     data = {}
 
     for table in tables_to_export:
-        columns, rows = fetch_table_data(web_data_path, table)
+        columns, rows = fetch_table_data(temp_db, table)
         data[table] = (columns, rows)
 
     write_csv(output_filename, data)
+    
+    # Cleanup temp
+    try:
+        os.remove(temp_db)
+        os.rmdir(temp_dir)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
-    export_chrome_autofill_data()
+    import argparse
+    parser = argparse.ArgumentParser(description="Export Chrome autofill data to CSV")
+    parser.add_argument("--output", "-o", help="Output CSV file path")
+    args = parser.parse_args()
+    export_chrome_autofill_data(output_file=args.output)
