@@ -1,5 +1,8 @@
 # IT360 Project
 
+## Video Demonstration
+https://youtu.be/XqvcCEBj-Ak
+
 ## Overview
 A tool for analyzing browser-related information such as cookies, extensions, download history, browsing history, login sessions, and cache/autofill data.
 
